@@ -5,3 +5,4 @@ main.js
 catchments.geojson
 modis_data/
 *.txt
+mod/
