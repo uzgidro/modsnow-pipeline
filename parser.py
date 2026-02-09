@@ -33,7 +33,7 @@ KNOWN_RIVERS = [
     # "amudarya_kerky",
     # "Angren",
     # "Atrek",
-    "Big_Naryn",
+    # "Big_Naryn",
     # "chadak_djulaysay",
     "Chatkal_Hudaydodsay",
     "Chirchik",
@@ -54,8 +54,8 @@ KNOWN_RIVERS = [
     # "maydantal",
     # "murgab",
     # "Murgob_Tagtabazar",
-    "naryn",
-    "oygaing",
+    # "naryn",
+    # "oygaing",
     # "pachkamar",
     # "packhamar",
     # "pandj",
@@ -63,19 +63,19 @@ KNOWN_RIVERS = [
     # "sangardak_kinguzar",
     # "sangzar_kirk",
     # "small_naryn",
-    "sox_sarykanda",
+    # "sox_sarykanda",
     # "Sumbar_Magtimgulli",
     # "Surkhandarya",
     # "talas_klyuchovka",
     # "Tedjen_Pulhatyn",
     "tupalang_zarchob",
-    "Ugam",
+    # "Ugam",
     # "vanch",
     # "Varzob_Dagana",
     # "Wachsh_Darband",
     # "yakarcha",
     # "yakkabag_tatar",
-    "zerafshan_dupuli",
+    # "zerafshan_dupuli",
 ]
 
 
@@ -368,8 +368,9 @@ class ModsnowParser:
             "zone_records": len(zone_data) if zone_data else 0,
             "latest_snow": snow_data[-1] if snow_data else None,
             "latest_zone": zone_data[-1] if zone_data else None,
+            "_snow_data": snow_data,
         }
-        self.save_json(river_name, summary, "summary.json")
+        self.save_json(river_name, {k: v for k, v in summary.items() if not k.startswith("_")}, "summary.json")
         return summary
 
     def get_latest_snow(self, river_name: str) -> Optional[dict]:
@@ -406,24 +407,17 @@ def main():
         rivers = parser.list_rivers()
         print_rivers_table(rivers)
 
-        # Интерактивный выбор
-        print(f"\nВсего доступно рек: {len(rivers)}")
-        print("\nВведите имена рек через запятую (или 'all' для всех):")
-        print("Пример: Chirchik, naryn, Ugam")
-
+        # Выбор рек: аргументы CLI > KNOWN_RIVERS
         if len(sys.argv) > 1:
-            selection = " ".join(sys.argv[1:])
+            arg = " ".join(sys.argv[1:])
+            if arg.lower() == "all":
+                selected = [r["name"] for r in rivers]
+            else:
+                selected = [s.strip() for s in arg.split(",")]
         else:
-            selection = input("> ").strip()
+            selected = KNOWN_RIVERS
 
-        if not selection:
-            print("Ничего не выбрано.")
-            return
-
-        if selection.lower() == "all":
-            selected = [r["name"] for r in rivers]
-        else:
-            selected = [s.strip() for s in selection.split(",")]
+        print(f"\nПарсим {len(selected)} рек из KNOWN_RIVERS")
 
         # Парсить выбранные реки
         results = []
@@ -434,14 +428,32 @@ def main():
             except Exception as e:
                 print(f"  ОШИБКА: {e}")
 
-        # Итоговая сводка
-        print(f"\n{'=' * 60}")
-        print("ИТОГО")
-        print(f"{'=' * 60}")
+        # Найти общую дату (самую раннюю из последних)
+        latest_dates = []
         for r in results:
             if r and r.get("latest_snow"):
-                ls = r["latest_snow"]
-                print(f"  {r['river']:<25} {ls['date']}  снег: {ls['snow_pct']:>6.1f}%")
+                latest_dates.append(r["latest_snow"]["date"])
+        if not latest_dates:
+            return
+
+        common_date = min(latest_dates)
+
+        # Итоговая сводка на общую дату
+        print(f"\n{'=' * 60}")
+        print(f"ИТОГО на {common_date}")
+        print(f"{'=' * 60}")
+        for r in results:
+            snow_data = r.get("_snow_data") or []
+            # Найти запись на общую дату
+            record = None
+            for rec in reversed(snow_data):
+                if rec["date"] <= common_date:
+                    record = rec
+                    break
+            if record:
+                print(f"  {r['river']:<25} {record['date']}  снег: {record['snow_pct']:>6.1f}%")
+            else:
+                print(f"  {r['river']:<25} нет данных")
 
 
 if __name__ == "__main__":
