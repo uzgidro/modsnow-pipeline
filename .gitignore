@@ -13,3 +13,4 @@ main.js
 nul
 .env
 docker-compose.override.yml
+config.yaml
