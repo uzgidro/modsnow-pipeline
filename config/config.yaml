@@ -1,0 +1,21 @@
+api:
+  url: "https://example.com/api/snow-cover"
+  timeout: 30
+  retries: 3
+  # api_key: "..."
+
+schedule:
+  time: "00:00"  # UTC
+
+modis:
+  days_behind: 3
+  bbox: [55, 33, 85, 50]
+  product: "MOD10A1F"
+  version: "61"
+
+paths:
+  data_dir: "data"
+  download_dir: "modis_data"
+
+logging:
+  level: "INFO"

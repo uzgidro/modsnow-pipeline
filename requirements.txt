@@ -1,0 +1,9 @@
+numpy>=2.0
+netCDF4>=1.7
+geopandas>=1.0
+pyproj>=3.6
+shapely>=2.0
+earthaccess>=0.12
+APScheduler>=3.10,<4.0
+requests>=2.31
+PyYAML>=6.0

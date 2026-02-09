@@ -1,0 +1,12 @@
+services:
+  modsnow-pipeline:
+    build: .
+    image: modsnow-pipeline:latest
+    container_name: modsnow-pipeline
+    restart: unless-stopped
+    environment:
+      - EARTHDATA_USERNAME=${EARTHDATA_USERNAME}
+      - EARTHDATA_PASSWORD=${EARTHDATA_PASSWORD}
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    stop_grace_period: 5m

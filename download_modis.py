@@ -5,76 +5,78 @@ MOD10A1F — ежедневные данные с уже удалённой об
 Разрешение: 500м, проекция: Sinusoidal.
 """
 
-import earthaccess
-import sys
-from datetime import datetime, timedelta
+import logging
+import os
 from pathlib import Path
 
-DOWNLOAD_DIR = Path("modis_data")
+import earthaccess
 
-# Центральная Азия: bbox (west, south, east, north)
-CA_BBOX = (55, 33, 85, 50)
+logger = logging.getLogger(__name__)
+
+DEFAULT_BBOX = (55, 33, 85, 50)  # Центральная Азия: (west, south, east, north)
 
 
 def login():
-    auth = earthaccess.login(persist=True)
+    """Авторизация в NASA Earthdata. Сначала env vars, потом .netrc."""
+    username = os.environ.get("EARTHDATA_USERNAME")
+    password = os.environ.get("EARTHDATA_PASSWORD")
+
+    if username and password:
+        logger.info("Авторизация через переменные окружения...")
+        auth = earthaccess.login(strategy="environment")
+    else:
+        logger.info("Авторизация через .netrc...")
+        auth = earthaccess.login(persist=True)
+
     if not auth.authenticated:
-        print("Ошибка авторизации NASA Earthdata!")
-        sys.exit(1)
+        raise RuntimeError("Ошибка авторизации NASA Earthdata")
     return auth
 
 
-def search_granules(date_str: str, product: str = "MOD10A1F"):
-    """Поиск гранул за конкретную дату."""
+def download_for_date(
+    date_str: str,
+    download_dir: str = "modis_data",
+    bbox: tuple = DEFAULT_BBOX,
+    product: str = "MOD10A1F",
+    version: str = "61",
+) -> Path:
+    """
+    Скачать все гранулы MODIS за дату для Центральной Азии.
+
+    Returns:
+        Path к директории с HDF файлами за этот день.
+
+    Raises:
+        RuntimeError: если данные не найдены или скачивание не удалось.
+    """
+    logger.info("Поиск %s за %s...", product, date_str)
     results = earthaccess.search_data(
         short_name=product,
-        version="61",
-        bounding_box=CA_BBOX,
+        version=version,
+        bounding_box=bbox,
         temporal=(date_str, date_str),
     )
-    return results
-
-
-def download_day(date_str: str, product: str = "MOD10A1F"):
-    """Скачать все гранулы за день для Центральной Азии."""
-    print(f"\nПоиск {product} за {date_str}...")
-    results = search_granules(date_str, product)
-    print(f"Найдено гранул: {len(results)}")
+    logger.info("Найдено гранул: %d", len(results))
 
     if not results:
-        return []
+        raise RuntimeError(f"Нет данных {product} за {date_str}")
 
-    # Показать тайлы
     for r in results:
         umm = r.get("umm", {})
-        print(f"  {umm.get('GranuleUR', '?')}")
+        logger.debug("  %s", umm.get("GranuleUR", "?"))
 
-    day_dir = DOWNLOAD_DIR / date_str
+    day_dir = Path(download_dir) / date_str
     day_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nСкачивание в {day_dir}/...")
+    logger.info("Скачивание в %s/ ...", day_dir)
     files = earthaccess.download(results, local_path=str(day_dir))
-    print(f"Скачано: {len(files)} файлов")
+
+    if not files:
+        raise RuntimeError(f"Скачивание не удалось для {date_str}")
+
     for f in files:
         p = Path(f)
         size_mb = p.stat().st_size / 1024 / 1024
-        print(f"  {p.name} ({size_mb:.1f} МБ)")
+        logger.info("  %s (%.1f МБ)", p.name, size_mb)
 
-    return files
-
-
-def main():
-    login()
-
-    if len(sys.argv) > 1:
-        date_str = sys.argv[1]
-    else:
-        # 3 дня назад (задержка MODIS)
-        dt = datetime.now() - timedelta(days=3)
-        date_str = dt.strftime("%Y-%m-%d")
-
-    download_day(date_str)
-
-
-if __name__ == "__main__":
-    main()
+    return day_dir
