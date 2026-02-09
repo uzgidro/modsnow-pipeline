@@ -217,9 +217,9 @@ class ModsnowParser:
     def fetch_zone_data(self, river_name: str) -> Optional[list[dict]]:
         """
         Получить данные по зонам высот (5.txt) для реки.
-        Формат: год  день  z1  z2  z3  z4  z5  z6
+        Формат: год  день  z1  z2  ...  zN  (от 1 до 14 зон)
         Возвращает список словарей с полями:
-          year, doy, date, zone1..zone6
+          year, doy, date, zone1..zoneN
         """
         if not self._river_folders:
             self.load_index()
@@ -241,30 +241,31 @@ class ModsnowParser:
         resp.raise_for_status()
 
         records = []
+        num_zones = 0
         for line in resp.text.strip().split("\n"):
             parts = line.split()
-            if len(parts) < 8:
+            if len(parts) < 3:
                 continue
             try:
                 year = int(parts[0])
                 doy = int(parts[1])
-                zones = [float(parts[i]) for i in range(2, 8)]
-                records.append({
+                zones = [float(p) for p in parts[2:]]
+                num_zones = max(num_zones, len(zones))
+                record = {
                     "year": year,
                     "doy": doy,
                     "date": doy_to_date(year, doy),
-                    "zone1": zones[0],
-                    "zone2": zones[1],
-                    "zone3": zones[2],
-                    "zone4": zones[3],
-                    "zone5": zones[4],
-                    "zone6": zones[5],
-                })
+                }
+                for i, val in enumerate(zones, 1):
+                    record[f"zone{i}"] = val
+                records.append(record)
             except (ValueError, IndexError):
                 continue
 
-        print(
-            f"  Загружено {len(records)} записей ({records[0]['date']} - {records[-1]['date']})" if records else "  Нет данных")
+        if records:
+            print(f"  Загружено {len(records)} записей, {num_zones} зон ({records[0]['date']} - {records[-1]['date']})")
+        else:
+            print("  Нет данных")
         return records
 
     # --- Скачивание изображений ---
