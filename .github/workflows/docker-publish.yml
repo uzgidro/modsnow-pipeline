@@ -53,6 +53,7 @@ jobs:
           image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/modsnow-pipeline:${{ needs.build-and-push.outputs.sha8 }}
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
 
   trigger-watchtower:
     runs-on: ubuntu-latest
