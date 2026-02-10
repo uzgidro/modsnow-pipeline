@@ -3,10 +3,14 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libhdf4-alt-dev libnetcdf-dev pkg-config gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-binary netCDF4 -r requirements.txt
 
 COPY data/ /app/data/
 COPY download_modis.py process_modis.py run.py api_client.py ./
