@@ -2,22 +2,26 @@
 Оркестратор MODIS SCA pipeline.
 
 Режимы запуска:
-  python run.py --once         → один раз (today - days_behind) и выйти
-  python run.py 2026-02-06     → для конкретной даты и выйти
-  python run.py                → startup + ежедневно по расписанию
+  python run.py --once         → один раз (today) и выйти
+  python run.py 2026-02-10     → для конкретной даты и выйти
+  python run.py                → HTTP-сервер + ежедневно по расписанию
 """
 
 import logging
 import os
 import shutil
-import signal
 import sys
+import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import uvicorn
 import yaml
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from api_client import send_results
 from download_modis import download_for_date, login
@@ -25,7 +29,10 @@ from process_modis import process_day
 
 logger = logging.getLogger("modsnow")
 
-scheduler: BlockingScheduler | None = None
+# Глобальные объекты
+_config: dict = {}
+_scheduler: BackgroundScheduler | None = None
+_pipeline_lock = threading.Lock()
 
 
 def load_config() -> dict:
@@ -55,26 +62,33 @@ def cleanup_hdf(hdf_dir: Path):
 def run_pipeline(config: dict, date_str: str = None):
     """
     Основной pipeline: скачивание → обработка → отправка → очистка.
+
+    Args:
+        date_str: Дата запроса (YYYY-MM-DD). resource_date вычисляется как
+                  date_str - days_behind. Если None — берётся сегодня UTC.
     """
     modis_cfg = config.get("modis", {})
     paths_cfg = config.get("paths", {})
     api_cfg = config.get("api", {})
+    days_behind = modis_cfg.get("days_behind", 3)
 
-    # Определить дату
+    # Определить дату запроса и дату ресурса
     if date_str is None:
-        days_behind = modis_cfg.get("days_behind", 3)
-        dt = datetime.now(timezone.utc) - timedelta(days=days_behind)
-        date_str = dt.strftime("%Y-%m-%d")
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    request_date = datetime.strptime(date_str, "%Y-%m-%d")
+    resource_date = request_date - timedelta(days=days_behind)
+    resource_date_str = resource_date.strftime("%Y-%m-%d")
 
     logger.info("=" * 60)
-    logger.info("Pipeline для %s", date_str)
+    logger.info("Pipeline: дата запроса %s, дата ресурса %s", date_str, resource_date_str)
     logger.info("=" * 60)
 
-    # 1. Скачать
+    # 1. Скачать (по дате ресурса)
     try:
         login()
         hdf_dir = download_for_date(
-            date_str=date_str,
+            date_str=resource_date_str,
             download_dir=paths_cfg.get("download_dir", "modis_data"),
             bbox=tuple(modis_cfg.get("bbox", [55, 33, 85, 50])),
             product=modis_cfg.get("product", "MOD10A1F"),
@@ -82,7 +96,7 @@ def run_pipeline(config: dict, date_str: str = None):
         )
     except Exception as e:
         logger.error("Ошибка скачивания: %s", e)
-        return
+        raise
 
     # 2. Обработать
     try:
@@ -92,11 +106,12 @@ def run_pipeline(config: dict, date_str: str = None):
         )
     except Exception as e:
         logger.error("Ошибка обработки: %s", e)
-        return
+        raise
 
     # 3. Отправить
     payload = {
         "date": date_str,
+        "resource_date": resource_date_str,
         "catchments": results,
     }
 
@@ -113,63 +128,127 @@ def run_pipeline(config: dict, date_str: str = None):
     else:
         logger.warning("Данные сохранены в %s для повторной отправки", hdf_dir)
 
-
-def graceful_shutdown(signum, frame):
-    """Обработчик сигналов для graceful shutdown."""
-    sig_name = signal.Signals(signum).name
-    logger.info("Получен сигнал %s, завершение...", sig_name)
-    global scheduler
-    if scheduler is not None:
-        scheduler.shutdown(wait=False)
-    sys.exit(0)
+    return {"date": date_str, "resource_date": resource_date_str, "success": success}
 
 
-def main():
-    config = load_config()
-    setup_logging(config)
+def _scheduled_run():
+    """Обёртка для запуска по расписанию (без пробрасывания исключений)."""
+    try:
+        run_pipeline(_config)
+    except Exception as e:
+        logger.error("Ошибка pipeline по расписанию: %s", e)
 
-    signal.signal(signal.SIGTERM, graceful_shutdown)
-    signal.signal(signal.SIGINT, graceful_shutdown)
 
-    # CLI аргументы
-    args = sys.argv[1:]
+# ── FastAPI ──────────────────────────────────────────────────
 
-    if "--once" in args:
-        logger.info("Режим: однократный запуск")
-        run_pipeline(config)
-        return
 
-    if args and not args[0].startswith("-"):
-        date_str = args[0]
-        logger.info("Режим: конкретная дата %s", date_str)
-        run_pipeline(config, date_str=date_str)
-        return
-
-    # Режим: расписание
-    logger.info("Режим: расписание")
-    schedule_time = config.get("schedule", {}).get("time", "06:00")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Запуск/остановка scheduler вместе с FastAPI."""
+    global _scheduler
+    schedule_time = _config.get("schedule", {}).get("time", "06:00")
     hour, minute = map(int, schedule_time.split(":"))
 
-    # Запуск при старте
-    logger.info("Запуск pipeline при старте...")
-    run_pipeline(config)
-
-    # Настроить расписание
-    global scheduler
-    scheduler = BlockingScheduler()
-    scheduler.add_job(
-        run_pipeline,
+    _scheduler = BackgroundScheduler()
+    _scheduler.add_job(
+        _scheduled_run,
         CronTrigger(hour=hour, minute=minute),
-        args=[config],
         misfire_grace_time=3600,
         id="daily_pipeline",
     )
+    _scheduler.start()
     logger.info("Расписание: ежедневно в %s UTC", schedule_time)
 
+    yield
+
+    _scheduler.shutdown(wait=False)
+    logger.info("Scheduler остановлен")
+
+
+app = FastAPI(title="MODSNOW Pipeline", lifespan=lifespan)
+
+
+class TriggerRequest(BaseModel):
+    date: str  # YYYY-MM-DD
+
+
+class TriggerResponse(BaseModel):
+    date: str
+    resource_date: str
+    success: bool
+
+
+@app.post("/api/trigger", response_model=TriggerResponse)
+def trigger_pipeline(body: TriggerRequest):
+    """Ручной запуск pipeline для указанной даты."""
+    # Валидация формата даты
     try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Завершение работы")
+        datetime.strptime(body.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты, ожидается YYYY-MM-DD")
+
+    if not _pipeline_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Pipeline уже выполняется")
+
+    try:
+        result = run_pipeline(_config, date_str=body.date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _pipeline_lock.release()
+
+    return result
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# ── CLI ──────────────────────────────────────────────────────
+
+
+def main():
+    global _config
+    _config = load_config()
+    setup_logging(_config)
+
+    args = sys.argv[1:]
+
+    # Режим: однократный запуск
+    if "--once" in args:
+        logger.info("Режим: однократный запуск")
+        try:
+            run_pipeline(_config)
+        except Exception:
+            pass
+        return
+
+    # Режим: конкретная дата
+    if args and not args[0].startswith("-"):
+        date_str = args[0]
+        logger.info("Режим: конкретная дата %s", date_str)
+        try:
+            run_pipeline(_config, date_str=date_str)
+        except Exception:
+            pass
+        return
+
+    # Режим: HTTP-сервер + расписание
+    logger.info("Режим: HTTP-сервер + расписание")
+
+    # Запуск pipeline при старте
+    logger.info("Запуск pipeline при старте...")
+    try:
+        run_pipeline(_config)
+    except Exception:
+        pass
+
+    server_cfg = _config.get("server", {})
+    host = server_cfg.get("host", "0.0.0.0")
+    port = server_cfg.get("port", 8000)
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
