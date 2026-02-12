@@ -108,6 +108,33 @@ def run_pipeline(config: dict, date_str: str = None):
         logger.error("Ошибка обработки: %s", e)
         raise
 
+    # 2b. ERA5 Snow Depth (optional, non-blocking)
+    era5_cfg = config.get("era5", {})
+    snow_depth_map = {}
+    if era5_cfg.get("enabled", True):
+        try:
+            from download_era5 import download_snow_depth
+            from process_era5 import process_snow_depth
+
+            era5_days_behind = era5_cfg.get("days_behind", days_behind)
+            era5_resource_date = request_date - timedelta(days=era5_days_behind)
+            era5_date_str = era5_resource_date.strftime("%Y-%m-%d")
+
+            nc_path = download_snow_depth(
+                date_str=era5_date_str,
+                download_dir=paths_cfg.get("era5_dir", "era5_data"),
+                bbox=tuple(modis_cfg.get("bbox", [55, 33, 85, 50])),
+            )
+            snow_depth_map = process_snow_depth(
+                str(nc_path), data_dir=paths_cfg.get("data_dir", "data")
+            )
+            logger.info("ERA5 snow depth: %d бассейнов", len(snow_depth_map))
+        except Exception as e:
+            logger.warning("ERA5 snow depth unavailable: %s", e)
+
+    for r in results:
+        r["snow_depth_m"] = snow_depth_map.get(r["name"])
+
     # 3. Отправить
     payload = {
         "date": date_str,

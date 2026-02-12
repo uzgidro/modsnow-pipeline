@@ -19,13 +19,14 @@ RUN pip install --no-cache-dir \
     "fastapi>=0.115" \
     "uvicorn>=0.30" \
     "requests>=2.31" \
-    "PyYAML>=6.0"
+    "PyYAML>=6.0" \
+    "cdsapi>=0.7"
 
 COPY data/ /app/data/
-COPY download_modis.py process_modis.py run.py api_client.py ./
+COPY download_modis.py process_modis.py download_era5.py process_era5.py run.py api_client.py ./
 COPY config/ /app/config/
 
-RUN mkdir -p /app/modis_data
+RUN mkdir -p /app/modis_data /app/era5_data
 
 # Проверка HDF4 при сборке
 RUN python -c "import netCDF4; print('netCDF4', netCDF4.__version__, '- HDF4 OK')"

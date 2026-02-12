@@ -13,6 +13,10 @@ modis:
   product: "MOD10A1F"
   version: "61"
 
+era5:
+  enabled: true
+  days_behind: 5     # ERA5-Land latency
+
 paths:
   data_dir: "data"
   download_dir: "modis_data"
