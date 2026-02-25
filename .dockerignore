@@ -11,6 +11,7 @@ parser.py
 compare.py
 setup_earthdata.py
 test_search.py
+tests/
 catchments.geojson
 main.js
 Dockerfile

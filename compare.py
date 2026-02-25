@@ -4,12 +4,10 @@
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-import httpx
-
-FIREBASE_DB_URL = "https://modsnow-a1c82-default-rtdb.firebaseio.com"
+from parser import ModsnowParser
 
 
 def load_our_results(date_str: str) -> dict:
@@ -28,42 +26,19 @@ def load_firebase_data(date_str: str) -> dict:
 
     print(f"Firebase: загрузка данных за {date_str} (год={year}, день={doy})...")
 
-    client = httpx.Client(timeout=30, follow_redirects=True)
-
-    # Загрузить индекс
-    folders = client.get(f"{FIREBASE_DB_URL}/RiverFolder.json").json() or {}
-    files = client.get(f"{FIREBASE_DB_URL}/RiverFile.json").json() or {}
-
-    # Найти все 4.txt файлы
-    txt4_map = {}
-    for fid, fdata in files.items():
-        if fdata.get("FileName") == "4.txt":
-            rid = fdata["RiverId"]
-            txt4_map[rid] = fdata["FileUrl"]
-
     results = {}
-    for rid, url in txt4_map.items():
-        title = folders.get(rid, {}).get("Title", "")
-        name = title.replace("River ", "") if title.startswith("River ") else title
-        if not name:
-            continue
-
-        resp = client.get(url)
-        for line in resp.text.strip().split("\n"):
-            parts = [p.strip().rstrip(";") for p in line.split(";")]
-            if len(parts) < 4:
+    with ModsnowParser() as p:
+        p.load_index()
+        for river in p.list_rivers():
+            name = river["name"]
+            records = p.fetch_snow_cover_data(name)
+            if not records:
                 continue
-            try:
-                y = int(parts[0])
-                d = int(parts[1])
-                snow = float(parts[3])
-                if y == year and d == doy and snow != -9:
-                    results[name] = snow
+            for rec in records:
+                if rec["year"] == year and rec["doy"] == doy and rec["snow_pct"] != -9:
+                    results[name] = rec["snow_pct"]
                     break
-            except (ValueError, IndexError):
-                continue
 
-    client.close()
     return results
 
 

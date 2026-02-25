@@ -10,7 +10,8 @@ main.js
 *.txt
 !requirements.txt
 .dodsrc
-nul
+.pytest_cache/
 .env
 docker-compose.override.yml
-config.yaml
+config/config.yaml
+config/.cdsapirc

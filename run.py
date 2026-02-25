@@ -7,8 +7,10 @@
   python run.py                → HTTP-сервер + ежедневно по расписанию
 """
 
+import asyncio
 import logging
 import os
+import secrets
 import shutil
 import sys
 import threading
@@ -20,7 +22,8 @@ import uvicorn
 import yaml
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from api_client import send_results
@@ -167,6 +170,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MODSNOW Pipeline", lifespan=lifespan)
 
+_bearer_scheme = HTTPBearer()
+
+
+def verify_api_key(
+    credentials: HTTPAuthorizationCredentials = Security(_bearer_scheme),
+) -> str:
+    """Проверка Bearer-токена из заголовка Authorization."""
+    expected = os.environ.get("API_KEY") or _config.get("api", {}).get("api_key", "")
+    if not expected or not secrets.compare_digest(credentials.credentials, expected):
+        raise HTTPException(status_code=403, detail="Неверный API-ключ")
+    return credentials.credentials
+
 
 class TriggerRequest(BaseModel):
     date: str  # YYYY-MM-DD
@@ -179,7 +194,7 @@ class TriggerResponse(BaseModel):
 
 
 @app.post("/api/trigger", response_model=TriggerResponse)
-def trigger_pipeline(body: TriggerRequest):
+async def trigger_pipeline(body: TriggerRequest, _key: str = Depends(verify_api_key)):
     """Ручной запуск pipeline для указанной даты."""
     # Валидация формата даты
     try:
@@ -191,9 +206,10 @@ def trigger_pipeline(body: TriggerRequest):
         raise HTTPException(status_code=409, detail="Pipeline уже выполняется")
 
     try:
-        result = run_pipeline(_config, date_str=body.date)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await asyncio.to_thread(run_pipeline, _config, body.date)
+    except Exception:
+        logger.exception("Ошибка pipeline (trigger)")
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка pipeline")
     finally:
         _pipeline_lock.release()
 
@@ -221,7 +237,8 @@ def main():
         try:
             run_pipeline(_config)
         except Exception:
-            pass
+            logger.exception("Pipeline завершился с ошибкой")
+            sys.exit(1)
         return
 
     # Режим: конкретная дата
@@ -231,7 +248,8 @@ def main():
         try:
             run_pipeline(_config, date_str=date_str)
         except Exception:
-            pass
+            logger.exception("Pipeline завершился с ошибкой")
+            sys.exit(1)
         return
 
     # Режим: HTTP-сервер + расписание
@@ -242,7 +260,7 @@ def main():
     try:
         run_pipeline(_config)
     except Exception:
-        pass
+        logger.exception("Pipeline при старте завершился с ошибкой (продолжаем)")
 
     server_cfg = _config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")

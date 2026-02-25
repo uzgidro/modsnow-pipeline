@@ -12,17 +12,15 @@
 
 import glob
 import logging
-import math
 from pathlib import Path
 
 import geopandas as gpd
 import netCDF4
 import numpy as np
+import shapely
 from pyproj import Transformer
 from shapely import segmentize
-from shapely.geometry import Point
 from shapely.ops import transform as shapely_transform
-from shapely.prepared import prep
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +88,8 @@ def parse_tile_id(filename: str) -> tuple:
 
 def read_snow_tile(filepath: str) -> np.ndarray:
     """Прочитать CGF_NDSI_Snow_Cover из HDF файла."""
-    ds = netCDF4.Dataset(filepath)
-    data = ds.variables["CGF_NDSI_Snow_Cover"][:]
-    ds.close()
-    return data
+    with netCDF4.Dataset(filepath) as ds:
+        return ds.variables["CGF_NDSI_Snow_Cover"][:]
 
 
 def mosaic_tiles(hdf_dir: str) -> tuple:
@@ -175,12 +171,9 @@ def calc_sca_for_catchment(
     pixel_xs = x_min + (col_start + np.arange(n_cols_sub) + 0.5) * CELL_SIZE
     pixel_ys = y_max - (row_start + np.arange(n_rows_sub) + 0.5) * CELL_SIZE
 
-    prepared_geom = prep(geom_sinu)
-    poly_mask = np.zeros((n_rows_sub, n_cols_sub), dtype=bool)
-    for r in range(n_rows_sub):
-        for c in range(n_cols_sub):
-            if prepared_geom.contains(Point(pixel_xs[c], pixel_ys[r])):
-                poly_mask[r, c] = True
+    xs_grid, ys_grid = np.meshgrid(pixel_xs, pixel_ys)
+    points = shapely.points(xs_grid.ravel(), ys_grid.ravel())
+    poly_mask = shapely.contains(geom_sinu, points).reshape(n_rows_sub, n_cols_sub)
 
     in_rows, in_cols = np.where(poly_mask)
     if len(in_rows) == 0:

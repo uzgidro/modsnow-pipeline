@@ -2,7 +2,7 @@ api:
   url: "https://example.com/api/snow-cover"
   timeout: 30
   retries: 3
-  # api_key: "..."
+  # api_key задаётся через env var API_KEY (не храните в этом файле)
 
 schedule:
   time: "00:00"  # UTC
