@@ -45,6 +45,12 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+class _HealthFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "GET /health" not in msg
+
+
 def setup_logging(config: dict):
     """Настроить логирование."""
     level = config.get("logging", {}).get("level", "INFO")
@@ -53,6 +59,7 @@ def setup_logging(config: dict):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    logging.getLogger("uvicorn.access").addFilter(_HealthFilter())
 
 
 def cleanup_hdf(hdf_dir: Path):
