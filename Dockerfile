@@ -1,34 +1,40 @@
-FROM condaforge/miniforge3:latest
+FROM condaforge/miniforge3:latest AS deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-WORKDIR /app
-
-# netCDF4 через conda-forge (гарантированно с HDF4)
+# Зависимости (редко меняются — кэшируется)
 RUN conda install -y -c conda-forge \
     "python>=3.12,<3.13" \
     "netcdf4>=1.7,<1.7.4" \
     numpy geopandas pyproj shapely \
-    && conda clean -afy
-
-# Остальное через pip
-RUN pip install --no-cache-dir \
+    && conda clean -afy \
+    && pip install --no-cache-dir \
     "earthaccess>=0.12" \
     "APScheduler>=3.10,<4.0" \
     "fastapi>=0.115" \
     "uvicorn>=0.30" \
     "requests>=2.31" \
-    "PyYAML>=6.0"
+    "PyYAML>=6.0" \
+    && python -c "import netCDF4; print('netCDF4', netCDF4.__version__, '- HDF4 OK')"
 
-COPY data/ /app/data/
-COPY download_modis.py process_modis.py run.py api_client.py ./
-COPY config/ /app/config/
+# --- Runtime stage ---
+FROM deps AS runtime
 
-RUN mkdir -p /app/modis_data
+WORKDIR /app
 
-# Проверка HDF4 при сборке
-RUN python -c "import netCDF4; print('netCDF4', netCDF4.__version__, '- HDF4 OK')"
+RUN useradd -r -m -s /usr/sbin/nologin appuser \
+    && mkdir -p /app/modis_data \
+    && chown -R appuser:appuser /app
+
+# Данные (меняются редко)
+COPY --chown=appuser:appuser data/ /app/data/
+COPY --chown=appuser:appuser config/ /app/config/
+
+# Код (меняется часто — последний слой)
+COPY --chown=appuser:appuser download_modis.py process_modis.py run.py api_client.py ./
+
+USER appuser
 
 EXPOSE 8000
 
