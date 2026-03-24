@@ -39,15 +39,15 @@ def download_for_date(
     bbox: tuple = DEFAULT_BBOX,
     product: str = "MOD10A1F",
     version: str = "61",
-) -> Path:
+) -> Path | None:
     """
     Скачать все гранулы MODIS за дату для Центральной Азии.
 
     Returns:
-        Path к директории с HDF файлами за этот день.
+        Path к директории с HDF файлами за этот день, или None если данных нет.
 
     Raises:
-        RuntimeError: если данные не найдены или скачивание не удалось.
+        RuntimeError: если скачивание не удалось.
     """
     logger.info("Поиск %s за %s...", product, date_str)
     results = earthaccess.search_data(
@@ -59,7 +59,8 @@ def download_for_date(
     logger.info("Найдено гранул: %d", len(results))
 
     if not results:
-        raise RuntimeError(f"Нет данных {product} за {date_str}")
+        logger.warning("Нет данных %s за %s", product, date_str)
+        return None
 
     for r in results:
         umm = r.get("umm", {})

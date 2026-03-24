@@ -94,16 +94,39 @@ def run_pipeline(config: dict, date_str: str = None):
     logger.info("Pipeline: дата запроса %s, дата ресурса %s", date_str, resource_date_str)
     logger.info("=" * 60)
 
-    # 1. Скачать (по дате ресурса)
+    # 1. Скачать (по дате ресурса, с откатом на предыдущие дни)
+    max_fallback = modis_cfg.get("max_fallback_days", 3)
+    download_kwargs = dict(
+        download_dir=paths_cfg.get("download_dir", "modis_data"),
+        bbox=tuple(modis_cfg.get("bbox", [55, 33, 85, 50])),
+        product=modis_cfg.get("product", "MOD10A1F"),
+        version=modis_cfg.get("version", "61"),
+    )
+
     try:
         login()
-        hdf_dir = download_for_date(
-            date_str=resource_date_str,
-            download_dir=paths_cfg.get("download_dir", "modis_data"),
-            bbox=tuple(modis_cfg.get("bbox", [55, 33, 85, 50])),
-            product=modis_cfg.get("product", "MOD10A1F"),
-            version=modis_cfg.get("version", "61"),
-        )
+        hdf_dir = None
+        original_resource_date_str = resource_date_str
+        for fallback in range(max_fallback + 1):
+            try_date = resource_date - timedelta(days=fallback)
+            try_date_str = try_date.strftime("%Y-%m-%d")
+            hdf_dir = download_for_date(date_str=try_date_str, **download_kwargs)
+            if hdf_dir is not None:
+                if fallback > 0:
+                    logger.info("Откат: данные найдены за %s (-%d дн.)", try_date_str, fallback)
+                    resource_date = try_date
+                    resource_date_str = try_date_str
+                break
+            if fallback < max_fallback:
+                logger.info("Нет данных за %s, пробуем предыдущий день...", try_date_str)
+
+        if hdf_dir is None:
+            if max_fallback == 0:
+                raise RuntimeError(f"Нет данных за {original_resource_date_str}")
+            raise RuntimeError(
+                f"Нет данных за {max_fallback + 1} дн. "
+                f"({original_resource_date_str} .. {try_date_str})"
+            )
     except Exception as e:
         logger.error("Ошибка скачивания: %s", e)
         raise
