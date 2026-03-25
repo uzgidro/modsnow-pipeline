@@ -10,6 +10,7 @@
   6. Расчёт SCA по высотным зонам (500м)
 """
 
+import gc
 import glob
 import logging
 from pathlib import Path
@@ -153,6 +154,7 @@ def calc_sca_for_catchment(
 
     geom_dense = segmentize(geometry, max_segment_length=0.01)
     geom_sinu = shapely_transform(transformer.transform, geom_dense)
+    shapely.prepare(geom_sinu)
 
     sx_min, sy_min, sx_max, sy_max = geom_sinu.bounds
     col_start = max(0, int((sx_min - x_min) / CELL_SIZE))
@@ -171,9 +173,18 @@ def calc_sca_for_catchment(
     pixel_xs = x_min + (col_start + np.arange(n_cols_sub) + 0.5) * CELL_SIZE
     pixel_ys = y_max - (row_start + np.arange(n_rows_sub) + 0.5) * CELL_SIZE
 
-    xs_grid, ys_grid = np.meshgrid(pixel_xs, pixel_ys)
-    points = shapely.points(xs_grid.ravel(), ys_grid.ravel())
-    poly_mask = shapely.contains(geom_sinu, points).reshape(n_rows_sub, n_cols_sub)
+    # Растровая маска: построчно проверяем пересечение с полигоном
+    # вместо создания N*M Shapely Point-объектов (~80 байт каждый)
+    poly_mask = np.zeros((n_rows_sub, n_cols_sub), dtype=bool)
+    half = CELL_SIZE * 0.5
+    for i, py in enumerate(pixel_ys):
+        row_line = shapely.linestrings(
+            [[pixel_xs[0] - half, py], [pixel_xs[-1] + half, py]]
+        )
+        if not shapely.intersects(geom_sinu, row_line):
+            continue
+        row_points = shapely.points(pixel_xs, np.full(n_cols_sub, py))
+        poly_mask[i] = shapely.contains(geom_sinu, row_points)
 
     in_rows, in_cols = np.where(poly_mask)
     if len(in_rows) == 0:
@@ -264,7 +275,29 @@ def process_day(hdf_dir: str, data_dir: str = "data") -> list:
     transformer = Transformer.from_crs("EPSG:4326", sinu_crs, always_xy=True)
     inverse_transformer = Transformer.from_crs(sinu_crs, "EPSG:4326", always_xy=True)
 
-    # 4. Расчёт SCA
+    # 4. Предзагрузка DEM и water_mask (один раз вместо N)
+    water_masks = {}
+    dem_grids = {}
+    for _, row in gdf.iterrows():
+        code = derive_code(row.get("Name", "?"))
+
+        wm_path = base / f"{code}_water_mask.asc"
+        if wm_path.exists() and code not in water_masks:
+            try:
+                water_masks[code] = read_ascii_grid(str(wm_path))
+            except (ValueError, IndexError):
+                pass
+
+        dem_path = base / f"{code}_dem500m.asc"
+        if dem_path.exists() and code not in dem_grids:
+            try:
+                dem_grids[code] = read_ascii_grid(str(dem_path))
+            except (ValueError, IndexError):
+                pass
+
+    logger.info("Загружено: %d DEM, %d water_mask", len(dem_grids), len(water_masks))
+
+    # 5. Расчёт SCA
     logger.info("Расчёт SCA по бассейнам (NDSI >= %d, зоны %dм)...", NDSI_THRESHOLD, ZONE_EXTENT)
     results = []
     for _, row in gdf.iterrows():
@@ -275,22 +308,11 @@ def process_day(hdf_dir: str, data_dir: str = "data") -> list:
 
         code = derive_code(name)
 
-        water_mask_info = None
-        wm_path = base / f"{code}_water_mask.asc"
-        if wm_path.exists():
-            try:
-                water_mask_info = read_ascii_grid(str(wm_path))
-            except (ValueError, IndexError):
-                pass
-
-        dem_info = None
-        dem_path = base / f"{code}_dem500m.asc"
-        if dem_path.exists():
-            dem_info = read_ascii_grid(str(dem_path))
-
         sca = calc_sca_for_catchment(
             mosaic, mosaic_bounds, geom, transformer,
-            inverse_transformer, water_mask_info, dem_info,
+            inverse_transformer,
+            water_masks.get(code),
+            dem_grids.get(code),
         )
         sca["name"] = name
         results.append(sca)
@@ -300,5 +322,8 @@ def process_day(hdf_dir: str, data_dir: str = "data") -> list:
             logger.info("  %-30s SCA: %6.1f%%%s", name, sca["sca_pct"], zones_str)
         else:
             logger.info("  %-30s нет данных", name)
+
+    del mosaic, water_masks, dem_grids
+    gc.collect()
 
     return results

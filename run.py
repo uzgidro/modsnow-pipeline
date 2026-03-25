@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import gc
 import logging
 import os
 import secrets
@@ -160,6 +161,9 @@ def run_pipeline(config: dict, date_str: str = None):
         cleanup_hdf(hdf_dir)
     else:
         logger.warning("Данные сохранены в %s для повторной отправки", hdf_dir)
+
+    del results, payload
+    gc.collect()
 
     return {"date": date_str, "resource_date": resource_date_str, "success": success}
 
