@@ -171,7 +171,9 @@ def run_pipeline(config: dict, date_str: str = None):
 def _scheduled_run():
     """Обёртка для запуска по расписанию (без пробрасывания исключений)."""
     try:
-        run_pipeline(_config)
+        date_offset = _config.get("schedule", {}).get("date_offset", 0)
+        target_date = datetime.now(timezone.utc) + timedelta(days=date_offset)
+        run_pipeline(_config, date_str=target_date.strftime("%Y-%m-%d"))
     except Exception as e:
         logger.error("Ошибка pipeline по расписанию: %s", e)
 
