@@ -21,6 +21,14 @@ RUN conda install -y -c conda-forge \
 # --- Runtime stage ---
 FROM deps AS runtime
 
+# Удалить Rust-движок conda (rattler) — нужен только для установки пакетов на
+# этапе сборки. rattler.abi3.so статически тянет уязвимые крейты (aws-lc-sys,
+# rust-openssl, quinn-proto, rustls-webpki), которые Trivy помечает как HIGH.
+# Рантайму нужен только Python + scientific-стек из /opt/conda, не conda-солвер.
+# Сносим точечно каталог с .so; импорт-проверка ниже падает, если что-то задето.
+RUN rm -rf /opt/conda/lib/python3.12/site-packages/rattler* \
+    && python -c "import netCDF4, numpy, geopandas, pyproj, shapely, earthaccess; print('runtime deps OK')"
+
 WORKDIR /app
 
 RUN useradd -r -m -s /usr/sbin/nologin appuser \
